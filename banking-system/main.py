@@ -1,20 +1,136 @@
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import List, Optional, Dict
+from abc import ABC, abstractmethod
+import os
 
-RED = '\033[31m'
-GREEN = '\033[32m'
-RESET = '\033[0m'
+# Base Transaction classes
+class Transaction(ABC):
+    def __init__(self, amount: float):
+        self.amount = amount
+    
+    @abstractmethod
+    def register(self, account: 'Account') -> None:
+        pass
 
-balance = 500
-limit = 500
-withdrawals = 3
-transaction_limit = 10
-extract = []
-clients = []
-accounts = []
-client_logged = None
-date_start = datetime.now()
+class Deposit(Transaction):
+    def register(self, account: 'Account') -> None:
+        account.deposit(self.amount)
 
-menu = '''
+class Withdrawal(Transaction):
+    def register(self, account: 'Account') -> None:
+        account.withdraw(self.amount)
+
+# History tracking
+class History:
+    def __init__(self):
+        self.transactions: List[str] = []
+    
+    def add_transaction(self, transaction: str) -> None:
+        self.transactions.append(f"{transaction} - Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+# Client classes
+class Client:
+    def __init__(self, address: str):
+        self.address = address
+        self.accounts: List['Account'] = []
+    
+    def add_account(self, account: 'Account') -> None:
+        self.accounts.append(account)
+    
+    def perform_transaction(self, account: 'Account', transaction: Transaction) -> None:
+        transaction.register(account)
+
+class Person(Client):
+    def __init__(self, cpf: str, name: str, birth_date: datetime, address: str):
+        super().__init__(address)
+        self.cpf = cpf
+        self.name = name
+        self.birth_date = birth_date
+
+# Account classes
+class Account:
+    def __init__(self, client: Client, number: int, branch: str):
+        self._balance = 0.0
+        self.number = number
+        self.branch = branch
+        self.client = client
+        self.history = History()
+        self._daily_withdrawals = 0
+        self._daily_transactions = 0
+        self._last_transaction_date = datetime.now().date()
+        client.add_account(self)
+
+    @property
+    def balance(self) -> float:
+        return self._balance
+
+    def _reset_daily_limits(self) -> None:
+        current_date = datetime.now().date()
+        if current_date != self._last_transaction_date:
+            self._daily_transactions = 0
+            self._last_transaction_date = current_date
+
+    def withdraw(self, amount: float) -> bool:
+        self._reset_daily_limits()
+        if isinstance(self, CheckingAccount):
+            if (amount <= 0 or 
+                amount > self._balance or 
+                amount > BankSystem.WITHDRAWAL_LIMIT or
+                self._daily_withdrawals >= BankSystem.DAILY_WITHDRAWAL_LIMIT or
+                self._daily_transactions >= BankSystem.DAILY_TRANSACTION_LIMIT):
+                return False
+            
+            self._balance -= amount
+            self._daily_withdrawals += 1
+            self._daily_transactions += 1
+            self.history.add_transaction(f"Saque: R$ {amount:.2f}")
+            return True
+        else:
+            if amount <= self._balance:
+                self._balance -= amount
+                self.history.add_transaction(f"Saque: R$ {amount:.2f}")
+                return True
+            return False
+
+    def deposit(self, amount: float) -> bool:
+        self._reset_daily_limits()
+        if amount <= 0 or self._daily_transactions >= BankSystem.DAILY_TRANSACTION_LIMIT:
+            return False
+            
+        self._balance += amount
+        self._daily_transactions += 1
+        self.history.add_transaction(f"Depósito: R$ {amount:.2f}")
+        return True
+
+class CheckingAccount(Account):
+    def __init__(self, client: Client, number: int, branch: str, limit: float, withdrawal_limit: int):
+        super().__init__(client, number, branch)
+        self.limit = limit
+        self.withdrawal_limit = withdrawal_limit
+
+# Main system class
+class BankSystem:
+    # Constants as class attributes
+    RED = '\033[31m'
+    GREEN = '\033[32m'
+    RESET = '\033[0m'
+    
+    # Transaction limits as class attributes
+    WITHDRAWAL_LIMIT = 500.0
+    DAILY_TRANSACTION_LIMIT = 10
+    DAILY_WITHDRAWAL_LIMIT = 3
+
+    def __init__(self):
+        self.clients: Dict[str, Person] = {}
+        self.accounts: Dict[int, Account] = {}
+        self.logged_client: Optional[Person] = None
+        self.current_account: Optional[Account] = None
+
+    def clear_screen(self):
+        os.system('cls' if os.name == 'nt' else 'clear')
+        
+    def display_main_menu(self) -> str:
+        return '''
 #######################################
 # Selecione a opção desejada:         #
 #                                     #
@@ -26,7 +142,8 @@ menu = '''
 #######################################
 '''
 
-operations_menu = '''
+    def display_operations_menu(self) -> str:
+        return '''
 ###############################
 # Selecione a opção desejada: #
 #                             #
@@ -38,168 +155,178 @@ operations_menu = '''
 ###############################
 '''
 
-def date_now ():
-    return datetime.now().strftime('%d/%m/%Y %H:%M')
+    def create_client(self) -> None:
+        cpf = input('Informe o CPF (somente número): ')
+        if cpf in self.clients:
+            print(f'\n{self.RED}Cliente já cadastrado.{self.RESET}')
+            return
 
-def get_client(cpf):
-    client_found = [client for client in clients if client.get('cpf') == cpf]
-    return client_found[0] if client_found else None
+        name = input('Informe o nome completo: ')
+        date_str = input('Informe a data de nascimento (dd/mm/aaaa): ')
+        address = input('Informe o endereço: ')
+        
+        try:
+            birth_date = datetime.strptime(date_str, '%d/%m/%Y')
+            client = Person(cpf, name, birth_date, address)
+            self.clients[cpf] = client
+            print(f'{self.GREEN}\nCliente criado com sucesso.{self.RESET}')
+            
+            self.create_account(cpf)
+        except ValueError:
+            print(f'{self.RED}Data de nascimento inválida.{self.RESET}')
 
-def get_account(number):
-    account_found = [account for account in accounts if account.get('account_number') == number]
-    return account_found[0] if account_found else None
+    def create_account(self, cpf: str) -> None:
+        if cpf not in self.clients:
+            print(f'\n{self.RED}Cliente não encontrado.{self.RESET}')
+            return
+            
+        account_number = len(self.accounts) + 1
+        client = self.clients[cpf]
+        account = CheckingAccount(
+            client=client,
+            number=account_number,
+            branch="0001",
+            limit=500.0,
+            withdrawal_limit=3
+        )
+        self.accounts[account_number] = account
+        
+        print(f'{self.GREEN}\nConta criada com sucesso.{self.RESET}')
+        print(f'\nAgência: 0001, Conta: {account_number}')
 
-def new_clients(name, age, cpf, address):
-    if get_client(cpf):
-        print(f'\n{RED}Cliente já cadastrado.{RESET}')
-        return
-    
-    clients.append({ 'name': name, 'age': age, 'cpf': cpf, 'address': address })
-
-    print(f'{GREEN}\nCliente criado com sucesso.{RESET}')
-
-def new_account(client_cpf):
-    if not get_client(client_cpf):
-        print(f'\n{RED}Cliente não cadastrado.{RESET}')
-        return
-    
-    account_number = len(accounts) + 1
-
-    accounts.append({ 'agency': 0o1, 'account_number': account_number, 'client': client_cpf })
-
-    print(f'{GREEN}\nConta criada com sucesso.{RESET}')
-    print(f'\nAgencia: 0001, Conta: {account_number}')
-
-def list_client_accounts(client_cpf):
-    if not get_client(client_cpf):
-        print(f'\n{RED}Cliente não cadastrado.{RESET}')
-        return
-    
-    accounts_found = [account for account in accounts if account.get('client') == client_cpf]
-
-    if accounts_found:
+    def list_accounts(self, cpf: str) -> None:
+        if cpf not in self.clients:
+            print(f'\n{self.RED}Cliente não encontrado.{self.RESET}')
+            return
+            
+        client = self.clients[cpf]
+        if not client.accounts:
+            print('\nNenhuma conta encontrada.')
+            return
+            
         print('\nContas cadastradas:')
-        for account in accounts_found:
-            account_number = account.get('account_number')
-            print(f'Agencia: 0001 - Conta: {account_number}')
-    else:
-        print('\nNenhuma conta cadastrada.')
+        for account in client.accounts:
+            print(f'Agência: {account.branch} - Conta: {account.number}')
 
-def withdrawal(value):
-    if value <= 0:
-        print(f'\n{RED}Valor para saque inválido.{RESET}')
-        return
-    elif value > limit:
-        print(f'\n{RED}Valor máximo para saque e de R$ {limit:.2f}.{RESET}')
-        return
-    elif value > balance:
-        print(f'\n{RED}Saldo insuficiente.{RESET}')
-        return
-
-    balance -= value
-    withdrawals -= 1
-    transaction_limit -= 1
-
-    extract.append(f'Saque: R$ {value:.2f}. \nData: {date_now()}')
-
-    print(f'{GREEN}\nSaque realizado com sucesso.{RESET}')
-
-def deposit(value: int):
-    if value <= 0:
-        print(f'{RED}Valor para depósito invalido.{RESET}')
-        return
-    
-    balance += value
-    transaction_limit -= 1
-
-    extract.append(f'Depósito: R$ {value:.2f}. \nData: {date_now()}')
-
-    print(f'{GREEN}\nDepósito realizado com sucesso.{RESET}')
-
-def get_extract():
-    print(f'Saldo: R$ {balance:.2f}')
-
-    if len(extract):
-        print('\nExtrato:\n')
-        print('\n---\n'.join(extract))
-
-    print(f'\n{date_now()}')
-
-while True:
-    if not client_logged:
-        print(menu)
-        operation = int(input('> '))
-        print('')
-
-        if operation == 1:
-            account_number = int(input('Informe o numero da conta: '))
-
-            account = get_account(account_number)
-
-            if not account:
-                print(f'\n{RED}Conta inválida.{RESET}')
-                continue
+    def make_deposit(self) -> None:
+        try:
+            amount = float(input('Digite o valor para depósito: '))
+            if amount <= 0:
+                print(f'\n{self.RED}Valor inválido para depósito.{self.RESET}')
+                return
             
-            client_logged = account.get('client')
-        elif operation == 2:
-            client_cpf = input('Informe o CPF (somente número): ')
+            if self.current_account._daily_transactions >= BankSystem.DAILY_TRANSACTION_LIMIT:
+                print(f'\n{self.RED}Limite de transações diárias excedido.{self.RESET}')
+                return
+                
+            deposit = Deposit(amount)
+            self.logged_client.perform_transaction(self.current_account, deposit)
+            print(f'{self.GREEN}\nDepósito realizado com sucesso.{self.RESET}')
+        except ValueError:
+            print(f'{self.RED}Valor inválido.{self.RESET}')
 
-            list_client_accounts( client_cpf)
-        elif operation == 3:
-            cpf = input('Informe o CPF (somente número): ')
-
-            if get_client(cpf):
-                print(f'\n{RED}Cliente já cadastrado.{RESET}')
-                continue
+    def make_withdrawal(self) -> None:
+        try:
+            amount = float(input('Digite o valor para saque: '))
+            if amount <= 0:
+                print(f'\n{self.RED}Valor inválido para saque.{self.RESET}')
+                return
             
-            name = input('Informe o nome completo: ')
-            age = input('Informe a data de nacimento (dd/mm/aaaa): ')
-            address = input('Informe o endereço (rua, numero, bairro - cidade/sigla estado): ')
+            if amount > self.WITHDRAWAL_LIMIT:
+                print(f'\n{self.RED}Valor excede o limite máximo de R$ {self.WITHDRAWAL_LIMIT:.2f} por saque.{self.RESET}')
+                return
+            
+            if isinstance(self.current_account, CheckingAccount):
+                if self.current_account._daily_withdrawals >= BankSystem.DAILY_WITHDRAWAL_LIMIT:
+                    print(f'\n{self.RED}Limite de saques diários excedido.{self.RESET}')
+                    return
+                
+                if self.current_account._daily_transactions >= BankSystem.DAILY_TRANSACTION_LIMIT:
+                    print(f'\n{self.RED}Limite de transações diárias excedido.{self.RESET}')
+                    return
+                    
+                if amount > self.current_account.balance:
+                    print(f'\n{self.RED}Saldo insuficiente. Seu saldo é R$ {self.current_account.balance:.2f}{self.RESET}')
+                    return
+                
+                withdrawal = Withdrawal(amount)
+                self.logged_client.perform_transaction(self.current_account, withdrawal)
+                print(f'{self.GREEN}\nSaque realizado com sucesso.{self.RESET}')
+                
+        except ValueError:
+            print(f'{self.RED}Valor inválido.{self.RESET}')
 
-            new_clients(name, age, cpf, address)
-            new_account(cpf)
-        elif operation == 4:
-            client_cpf = input('Informe o CPF (somente número): ')
+    def show_statement(self) -> None:
+        if not self.current_account:
+            return
+            
+        print(f'Saldo atual: R$ {self.current_account.balance:.2f}')
+        if isinstance(self.current_account, CheckingAccount):
+            print(f'\nSaques disponíveis no dia: {self.DAILY_WITHDRAWAL_LIMIT - self.current_account._daily_withdrawals}')
+            print(f'Transações disponíveis hoje: {self.DAILY_TRANSACTION_LIMIT - self.current_account._daily_transactions}')
+        print('\nExtrato:')
+        for transaction in self.current_account.history.transactions:
+            print(f'{transaction}')
 
-            new_account(client_cpf)
-        elif operation == 5:
-            break
-        else:
-            print(f'{RED}Operação inválida.{RESET}')
-    else:
-        print(operations_menu)
-        operation = int(input('> '))
-        print('')
+    def run(self) -> None:
+        while True:
+            if not self.logged_client:
+                print(self.display_main_menu())
+                try:
+                    option = int(input('> '))
+                    print()
 
-        if transaction_limit == 0 and operation in (1, 2):
-            now = datetime.now()
+                    if option == 1:
+                        account_number = int(input('Informe o número da conta: '))
+                        if account_number in self.accounts:
+                            self.current_account = self.accounts[account_number]
+                            self.logged_client = self.current_account.client
+                        else:
+                            print(f'\n{self.RED}Conta não encontrada.{self.RESET}')
+                    
+                    elif option == 2:
+                        cpf = input('Informe o CPF: ')
+                        self.list_accounts(cpf)
+                    
+                    elif option == 3:
+                        self.create_client()
+                    
+                    elif option == 4:
+                        cpf = input('Informe o CPF: ')
+                        self.create_account(cpf)
+                    
+                    elif option == 5:
+                        break
+                    
+                    else:
+                        print(f'{self.RED}Opção inválida.{self.RESET}')
+                
+                except ValueError:
+                    print(f'{self.RED}Entrada inválida.{self.RESET}')
+            
+            else:
+                print(self.display_operations_menu())
+                try:
+                    option = int(input('> '))
+                    print()
 
-            if now - date_start < timedelta(hours=24):
-                print('Você atingiu o limite diário de transações.')
-                continue
+                    if option == 1:
+                        self.make_deposit()
+                    elif option == 2:
+                        self.make_withdrawal()
+                    elif option == 3:
+                        self.show_statement()
+                    elif option == 4:
+                        self.logged_client = None
+                        self.current_account = None
+                    elif option == 5:
+                        break
+                    else:
+                        print(f'{self.RED}Opção inválida.{self.RESET}')
+                
+                except ValueError:
+                    print(f'{self.RED}Entrada inválida.{self.RESET}')
 
-            transaction_limit = 10
-            date_start = now
-
-        if operation == 1:
-            value = int(input('Digite um valor para depósito: '))
-
-            deposit(value)
-        elif operation == 2:
-            if withdrawals == 0:
-                print('Você atingiu o limite diário de saques.')
-                continue
-
-            value = int(input('Digite um valor para saque: '))
-
-            withdrawal(value)
-        elif operation == 3:
-            get_extract()
-        elif operation == 4:
-            client_logged = None
-            continue
-        elif operation == 5:
-            client_logged = None
-            break
-        else:
-            print(f'{RED}Operação inválida.{RESET}')
+if __name__ == "__main__":
+    system = BankSystem()
+    system.run()
